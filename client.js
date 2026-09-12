@@ -59,6 +59,11 @@ window.__ModuleLoader__.load({
     // 棋盘几何：棋子落在**线的交点**上（不是格子内）。放在模块级是为了让
     // tools/verify-gomoku.mjs 能离线取到它 —— 位置只有这一个来源，于是
     // 「网格线位置 = 落子热区中心 = 棋子圆心」三者恒等，不可能各算各的。
+    //
+    // 直径取 20 / 16（而不是 19 / 14）：这套环境的 devicePixelRatio = 1.25，
+    // 19px 会落在 23.75 个设备像素上 —— **分数设备像素下 Chrome 会把
+    // border-radius:50% 栅格成圆角方形**（实测填充率 0.830，正圆应 0.785；
+    // 60px 的对照组是 0.781）。20×1.25 = 25、16×1.25 = 20 都是整数设备像素。
     var STARS = [[3, 3], [3, 11], [11, 3], [11, 11], [7, 7]]
 
     function boardGeom(compact) {
@@ -69,23 +74,23 @@ window.__ModuleLoader__.load({
         pad: pad,
         span: (SIZE - 1) * step,
         size: (SIZE - 1) * step + pad * 2,
-        stone: step - 3,
+        stone: compact ? 16 : 20,
       }
     }
 
-    // 棋子样式（纯函数）。boxSizing 必须是 border-box：白子那圈 1px 描边若算在
-    // 尺寸之外（content-box），白子会比黑子大 2px，圆心还会偏 1px
-    // —— 实测过 190.8 vs 交点 190，就是这么来的。
-    function stoneStyle(v, d, isLast, left, top) {
-      var st = {
-        position: 'absolute', left: left + 'px', top: top + 'px',
-        width: d + 'px', height: d + 'px', boxSizing: 'border-box', borderRadius: '50%',
-        background: v === 1 ? '#1b1b1f' : '#f7f7fa',
-        boxShadow: isLast ? '0 0 0 2px #e5534b' : '0 1px 2px rgba(0,0,0,.35)',
-        pointerEvents: 'none',
+    // 棋子形状（纯函数）。**用 SVG <circle> 画，不用 border-radius**：
+    // ① 真矢量圆，不受分数设备像素的栅格化怪癖影响；
+    // ② r 与描边宽度一起算好，圆整体落在 d×d 之内，圆心永远在 d/2。
+    function stoneShape(v, d, isLast) {
+      var sw = isLast ? 2 : 1
+      return {
+        r: d / 2 - sw / 2,
+        cx: d / 2,
+        cy: d / 2,
+        strokeWidth: sw,
+        stroke: isLast ? '#e5534b' : (v === 2 ? 'rgba(0,0,0,.35)' : 'none'),
+        fill: v === 1 ? '#1b1b1f' : '#f7f7fa',
       }
-      if (v === 2) st.border = '1px solid rgba(0,0,0,.35)'
-      return st
     }
 
     // host 路由往返：非 2xx 一律抛出带响应片段的错误，界面上能看到原因。
@@ -240,6 +245,10 @@ window.__ModuleLoader__.load({
               r: res.r, c: res.c, name: res.name || '模型',
               same: !!res.agreedWithEngine, fallback: !!res.fallback,
               timedOut: !!res.timedOut, timeoutMs: res.timeoutMs,
+              overridden: !!res.overridden,
+              modelR: res.modelChoice ? res.modelChoice.r : null,
+              modelC: res.modelChoice ? res.modelChoice.c : null,
+              reason: res.engine ? res.engine.reason : '',
             },
           })
           if (!ok) {
@@ -272,7 +281,20 @@ window.__ModuleLoader__.load({
 
       // ---------------- 组件 ----------------
       function stoneNode(v, d, isLast, left, top, key) {
-        return h('div', { key: key, style: stoneStyle(v, d, isLast, left, top) })
+        var sh = stoneShape(v, d, isLast)
+        return h('svg', {
+          key: key,
+          width: d, height: d, viewBox: '0 0 ' + d + ' ' + d,
+          shapeRendering: 'geometricPrecision',
+          style: {
+            position: 'absolute', left: left + 'px', top: top + 'px',
+            width: d + 'px', height: d + 'px', display: 'block',
+            pointerEvents: 'none',
+          },
+        }, h('circle', {
+          cx: sh.cx, cy: sh.cy, r: sh.r,
+          fill: sh.fill, stroke: sh.stroke, strokeWidth: sh.strokeWidth,
+        }))
       }
 
       function Board(props) {
@@ -366,13 +388,21 @@ window.__ModuleLoader__.load({
         var dir = g.dir || []
         var val = ''
         if (props.value) {
-          val = (props.value.provider === 'engine') ? 'ENGINE' : (props.value.provider + SEP + props.value.model)
+          if (props.value.provider === 'engine') {
+            val = props.value.model === 'strong' ? 'ENGINE_STRONG' : (props.value.model === 'easy' ? 'ENGINE_EASY' : 'ENGINE')
+          } else {
+            val = props.value.provider + SEP + props.value.model
+          }
         }
         var opts = [h('option', { key: '_', value: '' }, '选择模型…')]
         if (props.allowCurrent && g.current) opts.push(h('option', { key: '_cur', value: 'cur' }, '本会话模型（我）'))
-        opts.push(h('option', { key: '_engine', value: 'ENGINE' }, '⚙ 内置引擎（不花 token）'))
+        opts.push(h('option', { key: '_e3', value: 'ENGINE_STRONG' }, '⚙ 引擎·强（多推一层对手回应）'))
+        opts.push(h('option', { key: '_e2', value: 'ENGINE' }, '⚙ 引擎·标准（不花 token）'))
+        opts.push(h('option', { key: '_e1', value: 'ENGINE_EASY' }, '⚙ 引擎·轻（会失误，想赢就选它）'))
         var byKey = {}
-        byKey.ENGINE = { provider: 'engine', model: 'engine', name: '引擎' }
+        byKey.ENGINE_STRONG = { provider: 'engine', model: 'strong', name: '引擎·强' }
+        byKey.ENGINE = { provider: 'engine', model: 'normal', name: '引擎·标准' }
+        byKey.ENGINE_EASY = { provider: 'engine', model: 'easy', name: '引擎·轻' }
         for (var i = 0; i < dir.length; i++) {
           var p = dir[i]
           var ms = p.models || []
@@ -514,10 +544,13 @@ window.__ModuleLoader__.load({
         if (g.modelMove) {
           if (g.modelMove.timedOut) {
             parts.push(g.modelMove.name + ' 超时未回（预算 ' + Math.round((g.modelMove.timeoutMs || 0) / 1000) + 's）→ 引擎代打')
+          } else if (g.modelMove.overridden) {
+            parts.push('模型选了 (' + g.modelMove.modelR + ',' + g.modelMove.modelC + ')，但引擎判定必须先处理 ('
+              + g.modelMove.r + ',' + g.modelMove.c + ')：' + g.modelMove.reason + ' → 已按引擎下')
           } else {
             parts.push(g.modelMove.name + ' 下 (' + g.modelMove.r + ',' + g.modelMove.c + ')' + (g.modelMove.fallback ? '［兜底］' : ''))
           }
-          if (g.engine && !g.modelMove.timedOut) {
+          if (g.engine && !g.modelMove.timedOut && !g.modelMove.overridden) {
             parts.push(g.modelMove.same
               ? '与引擎首选一致 ✓'
               : '引擎首选 (' + g.engine.r + ',' + g.engine.c + ')：' + g.engine.reason)

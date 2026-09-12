@@ -142,11 +142,35 @@ export function rankMoves(cells, size, side, limit) {
       // 剩下的部分给"双向价值"加成，避免只盯一头。
       const hi = Math.max(atk, def * 0.95)
       const lo = Math.min(atk, def * 0.95)
-      cands.push({ r, c, score: hi + lo * 0.35, atk, def, reason: reasonFor(atk, def) })
+      // 紧急度：≥2 表示"必须先处理这里，否则局面直接崩"——对方的活三/冲四/活四，
+      // 以及双方的五连。move 路由据此让引擎在强制手上**压过模型的选择**。
+      let urgency = 0
+      if (atk >= 1000000) urgency = 5
+      else if (def >= 1000000) urgency = 4
+      else if (atk >= 120000) urgency = 3
+      else if (def >= 120000) urgency = 3
+      else if (def >= 9000) urgency = 2
+      cands.push({ r, c, score: hi + lo * 0.35, atk, def, urgency, reason: reasonFor(atk, def) })
     }
   }
   cands.sort((a, b) => b.score - a.score)
   return cands.slice(0, n)
+}
+
+// 「强」档：在 top 候选上再推一层 —— 我下这里之后，对手最好的一手有多凶？
+// 只有一层（不是完整搜索），但足以避免"只顾自己连、把对方活四放出来"这类失手。
+export function rankMovesStrong(cells, size, side, limit) {
+  const base = rankMoves(cells, size, side, 12)
+  const foe = side === 1 ? 2 : 1
+  const scored = base.map((m) => {
+    const next = cells.slice()
+    next[m.r * size + m.c] = side
+    const reply = rankMoves(next, size, foe, 1)[0]
+    const replyThreat = reply ? Math.max(reply.atk, reply.def * 0.95) : 0
+    return { ...m, replyThreat, score: m.score - replyThreat * 0.9 }
+  })
+  scored.sort((a, b) => b.score - a.score)
+  return scored.slice(0, limit)
 }
 
 export function pickMove(text, reasoning, size, cells, side) {
@@ -302,16 +326,23 @@ export async function apply(ctx) {
         if (!provider || !model) throw new Error('没有指定模型（provider/model 为空）')
         if (cells.length !== size * size) throw new Error('棋盘数据不完整')
 
-        // 内置引擎对手：不调用任何模型，直接用战术引擎的第一候选 —— 不花 token、
-        // 也不会"乱下"。想验证引擎本身有多强、或者不想烧 token 时用它。
-        if (provider === 'engine' || model === 'engine') {
-          const rankedEngine = rankMoves(cells, size, side, 3)
+        // 内置引擎对手：不调用任何模型，直接用战术引擎的候选 —— 不花 token、
+        // 也不会"乱下"。三档：strong=多推一层对手回应，normal=单层战术，
+        // easy=前几手随机（故意会失误，给想赢的人留一档）。
+        if (provider === 'engine') {
+          const level = (model === 'strong' || model === 'easy') ? model : 'normal'
+          const rankedEngine = level === 'strong'
+            ? rankMovesStrong(cells, size, side, 3)
+            : rankMoves(cells, size, side, 4)
           if (!rankedEngine.length) throw new Error('没有可落子的位置（棋盘已满？）')
+          const pickIdx = level === 'easy' ? Math.floor(Math.random() * Math.min(4, rankedEngine.length)) : 0
+          const mv = rankedEngine[pickIdx]
+          const label = level === 'strong' ? '引擎·强' : (level === 'easy' ? '引擎·轻' : '引擎·标准')
           sendJson(res, 200, {
-            r: rankedEngine[0].r, c: rankedEngine[0].c, fallback: false, from: 'engine',
-            engine: { r: rankedEngine[0].r, c: rankedEngine[0].c, reason: rankedEngine[0].reason },
-            agreedWithEngine: true, candidates: rankedEngine,
-            text: '', reasoning: '', finishKind: 'engine', usage: null, ms: 0, name: '引擎',
+            r: mv.r, c: mv.c, fallback: false, from: 'engine',
+            engine: { r: mv.r, c: mv.c, reason: mv.reason },
+            agreedWithEngine: pickIdx === 0, candidates: rankedEngine.slice(0, 3),
+            text: '', reasoning: '', finishKind: 'engine', usage: null, ms: 0, name: label,
           })
           return
         }
@@ -405,10 +436,23 @@ export async function apply(ctx) {
         } else {
           picked = pickMove(text, reasoning, size, cells, side)
         }
+        const modelPick = { r: picked.r, c: picked.c }
+        // 强制手否决：引擎判定"必须先处理这里"时（对方活三/冲四/活四、双方五连），
+        // 不让模型的选择改变结论 —— 用户实测反馈过"我明显有活三它却不堵"，
+        // 这种局面不是该信任模型的地方。
+        let overridden = false
+        if (!timedOut && engine && ranked[0].urgency >= 2) {
+          const same = picked.r === engine.r && picked.c === engine.c
+          if (!same) {
+            overridden = true
+            picked = { r: engine.r, c: engine.c, fallback: false, from: 'engine-forced', reason: engine.reason }
+          }
+        }
         if (picked.r < 0) throw new Error('没有可落子的位置（棋盘已满？）')
         sendJson(res, 200, {
           r: picked.r, c: picked.c, fallback: picked.fallback, from: picked.from,
           timedOut, timeoutMs: timeoutMs,
+          overridden, modelChoice: overridden ? modelPick : null,
           engine: engine,
           agreedWithEngine: !!(engine && engine.r === picked.r && engine.c === picked.c),
           candidates: ranked.slice(0, 3),

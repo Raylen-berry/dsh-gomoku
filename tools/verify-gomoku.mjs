@@ -25,7 +25,10 @@ const clientSrc = readFileSync(join(root, 'client.js'), 'utf8')
 const clientBody = `(function(){
   var exports = {}
   ${clientSrc.slice(clientSrc.indexOf('var SIZE = 15'), clientSrc.indexOf('// host 路由往返'))}
-  return { winnerAt: winnerAt, emptyCells: emptyCells, SIZE: SIZE, boardGeom: boardGeom, STARS: STARS, stoneStyle: stoneStyle }
+  return {
+    winnerAt: winnerAt, emptyCells: emptyCells, SIZE: SIZE,
+    boardGeom: boardGeom, STARS: STARS, stoneShape: stoneShape,
+  }
 })()`
 const C = eval(clientBody)
 
@@ -63,7 +66,8 @@ const hostBody = `(function(){
   ${hostSrc.slice(start, end).replace(/^export /gm, '')}
   return {
     pickMove: pickMove, scanCoords: scanCoords,
-    rankMoves: rankMoves, lineValue: lineValue, reasonFor: reasonFor,
+    rankMoves: rankMoves, rankMovesStrong: rankMovesStrong,
+    lineValue: lineValue, reasonFor: reasonFor,
   }
 })()`
 const H = eval(hostBody)
@@ -120,19 +124,25 @@ console.log('[4] 棋盘几何（棋子 = 交点）')
   }
   check('星位共 5 个且含天元', C.STARS.length === 5 && JSON.stringify(C.STARS).includes('[7,7]'))
 
-  // 白子的 1px 描边必须是 border-box，否则白子大 2px 且圆心偏 1px
-  // （浏览器实测过：白子中心 190.8，交点 190）
+  // 棋子必须是**真圆**：改用 SVG <circle> 画。此前用 border-radius:50%，
+  // 在 19px×DPR1.25=23.75 个设备像素（分数）时被 Chrome 栅格成圆角方形
+  // —— 实测填充率 0.830（正圆 0.785），用户一眼就看出来了。
   const gm = C.boardGeom(false)
-  const black = C.stoneStyle(1, gm.stone, false, 100, 100)
-  const white = C.stoneStyle(2, gm.stone, true, 100, 100)
-  check('棋子尺寸盒子 = border-box（描边不吃尺寸）',
-    black.boxSizing === 'border-box' && white.boxSizing === 'border-box',
-    { black: black.boxSizing, white: white.boxSizing })
-  check('黑白子声明尺寸一致', black.width === white.width && black.height === white.height,
-    { black: black.width, white: white.width })
-  check('黑白子圆心坐标一致（只有描边不同）', black.left === white.left && black.top === white.top)
-  check('棋子不吃鼠标事件（热区才收点击）', black.pointerEvents === 'none' && white.pointerEvents === 'none')
-  check('最后一手有红圈标记', String(white.boxShadow).includes('#e5534b') && !String(black.boxShadow).includes('#e5534b'))
+  const bk = C.stoneShape(1, gm.stone, false)
+  const wt = C.stoneShape(2, gm.stone, false)
+  const last = C.stoneShape(2, gm.stone, true)
+  check('圆心在尺寸正中心（cx = cy = d/2）', bk.cx === gm.stone / 2 && bk.cy === gm.stone / 2, bk)
+  check('圆 + 描边整体落在 d×d 之内（r + strokeWidth/2 ≤ d/2）',
+    [bk, wt, last].every((s) => s.r + s.strokeWidth / 2 <= gm.stone / 2 + 1e-9))
+  check('黑白子半径与描边宽度一致（只有颜色不同）',
+    bk.r === wt.r && bk.strokeWidth === wt.strokeWidth && bk.fill !== wt.fill)
+  check('最后一手用红描边（2px）', last.stroke === '#e5534b' && last.strokeWidth === 2)
+  check('普通子不用红描边', bk.stroke !== '#e5534b')
+  for (const compact of [false, true]) {
+    const g2 = C.boardGeom(compact)
+    check(`${compact ? '浮窗' : '会话页'}：棋子直径在 DPR1.25 下是整数设备像素（${g2.stone}→${g2.stone * 1.25}）`,
+      Number.isInteger(g2.stone * 1.25), g2.stone)
+  }
 }
 
 // ---- 战术引擎：把"成五/挡五/活四"这些确定性的事交给引擎，弱模型只做选择 ----
@@ -169,6 +179,31 @@ console.log('[5] 战术引擎（候选点排序）')
   check('候选按评分降序', after.length < 2 || after[0].score >= after[1].score)
   check('候选默认只取已有棋子附近（空盘除外）',
     after.every((m) => Math.abs(m.r - 7) <= 2 && Math.abs(m.c - 7) <= 2), after.map((m) => [m.r, m.c]))
+
+  // 紧急度：模型不被信任的那几类局面（见 move 路由的"强制手否决"）
+  c = blank()
+  for (let col = 4; col <= 6; col++) c[7 * N + col] = 2   // 白方活三 .WWW.
+  const vsOpen3 = H.rankMoves(c, N, 1, 3)
+  check('对方活三 → 首选紧急度 ≥ 2（会被强制手否决接管）', vsOpen3[0].urgency >= 2,
+    { move: [vsOpen3[0].r, vsOpen3[0].c], ur: vsOpen3[0].urgency, why: vsOpen3[0].reason })
+  check('对方活三的堵点落在两端', vsOpen3[0].r === 7 && (vsOpen3[0].c === 3 || vsOpen3[0].c === 7), [vsOpen3[0].r, vsOpen3[0].c])
+  check('对方活三的理由写明"活三/活四"', /活[三四]/.test(String(vsOpen3[0].reason)), vsOpen3[0].reason)
+
+  c = blank()
+  for (let col = 3; col <= 6; col++) c[7 * N + col] = 1
+  check('我方四连的紧急度 = 5（最高）', H.rankMoves(c, N, 1, 1)[0].urgency === 5)
+  c = blank(); c[7 * N + 7] = 1
+  check('双方都无威胁时紧急度 < 2（正常局面交回模型）',
+    H.rankMoves(c, N, 1, 3).every((m) => m.urgency < 2), H.rankMoves(c, N, 1, 3).map((m) => m.urgency))
+
+  // 「强」档：多推一层对手回应
+  c = blank()
+  for (let col = 4; col <= 6; col++) c[7 * N + col] = 2
+  const strong = H.rankMovesStrong(c, N, 1, 3)
+  check('强档返回候选且带 replyThreat（对手回应的威胁值）',
+    strong.length > 0 && strong.every((m) => typeof m.replyThreat === 'number'), strong.length)
+  check('强档在"对方活三"局面同样先堵', strong[0].r === 7 && (strong[0].c === 3 || strong[0].c === 7), [strong[0].r, strong[0].c])
+  check('强档按扣除对手回应后的评分降序', strong.length < 2 || strong[0].score >= strong[1].score)
 }
 
 console.log('')
