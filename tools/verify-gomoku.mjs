@@ -60,8 +60,11 @@ const hostSrc = readFileSync(join(root, 'index.js'), 'utf8')
 const start = hostSrc.indexOf('function readBody')
 const end = hostSrc.indexOf('export async function apply')
 const hostBody = `(function(){
-  ${hostSrc.slice(start, end).replace(/export function pickMove/, 'function pickMove')}
-  return { pickMove: pickMove, scanCoords: scanCoords }
+  ${hostSrc.slice(start, end).replace(/^export /gm, '')}
+  return {
+    pickMove: pickMove, scanCoords: scanCoords,
+    rankMoves: rankMoves, lineValue: lineValue, reasonFor: reasonFor,
+  }
 })()`
 const H = eval(hostBody)
 
@@ -130,6 +133,42 @@ console.log('[4] 棋盘几何（棋子 = 交点）')
   check('黑白子圆心坐标一致（只有描边不同）', black.left === white.left && black.top === white.top)
   check('棋子不吃鼠标事件（热区才收点击）', black.pointerEvents === 'none' && white.pointerEvents === 'none')
   check('最后一手有红圈标记', String(white.boxShadow).includes('#e5534b') && !String(black.boxShadow).includes('#e5534b'))
+}
+
+// ---- 战术引擎：把"成五/挡五/活四"这些确定性的事交给引擎，弱模型只做选择 ----
+console.log('[5] 战术引擎（候选点排序）')
+{
+  const N = 15
+  const blank = () => new Array(N * N).fill(0)
+
+  let c = blank()
+  for (let col = 3; col <= 6; col++) c[7 * N + col] = 1 // 我方四连
+  const win = H.rankMoves(c, N, 1, 3)
+  check('自己四连 → 首选直接补成五',
+    win[0] && win[0].r === 7 && (win[0].c === 2 || win[0].c === 7), win[0])
+  check('该首选理由写明"连成五子"', /五子/.test(String(win[0] && win[0].reason)), win[0] && win[0].reason)
+
+  c = blank()
+  for (let col = 3; col <= 6; col++) c[7 * N + col] = 2 // 对方四连
+  const block = H.rankMoves(c, N, 1, 3)
+  check('对方四连 → 首选去挡',
+    block[0] && block[0].r === 7 && (block[0].c === 2 || block[0].c === 7), block[0])
+  check('挡点理由写明"必须挡"', /必须挡/.test(String(block[0] && block[0].reason)), block[0] && block[0].reason)
+
+  c = blank()
+  for (let col = 3; col <= 6; col++) { c[7 * N + col] = 1; c[9 * N + col] = 2 }
+  const both = H.rankMoves(c, N, 1, 3)
+  check('我方能成五、对方也能成五 → 先成五（赢棋优先于挡棋）', both[0].r === 7, both[0])
+
+  const first = H.rankMoves(blank(), N, 1, 8)
+  check('空盘也给出候选', first.length >= 1 && first.every((m) => m.r >= 0 && m.r < N && m.c >= 0 && m.c < N), first.length)
+
+  c = blank(); c[7 * N + 7] = 1
+  const after = H.rankMoves(c, N, 2, 8)
+  check('候选里绝不含已占点', after.every((m) => c[m.r * N + m.c] === 0))
+  check('候选按评分降序', after.length < 2 || after[0].score >= after[1].score)
+  check('候选默认只取已有棋子附近（空盘除外）',
+    after.every((m) => Math.abs(m.r - 7) <= 2 && Math.abs(m.c - 7) <= 2), after.map((m) => [m.r, m.c]))
 }
 
 console.log('')

@@ -28,6 +28,7 @@ window.__ModuleLoader__.load({
     var SIZE = 15
     var MODELS_PATH = '/gomoku/models'
     var MOVE_PATH = '/gomoku/move'
+    var SELFTEST_PATH = '/gomoku/selftest'
 
     function emptyCells() {
       var a = []
@@ -112,6 +113,7 @@ window.__ModuleLoader__.load({
         busy: false, thinking: '', err: '', last: null,
         open: false, collapsed: false,
         gen: 0,
+        engine: null, modelMove: null, check: null, checking: false,
       }
       var subs = []
       function notify() { for (var i = 0; i < subs.length; i++) { try { subs[i]() } catch (e) {} } }
@@ -202,6 +204,17 @@ window.__ModuleLoader__.load({
         })
       }
 
+      // 体检当前对手模型所属 provider 下的所有模型（哪个账号真能用，一目了然）。
+      function runSelftest() {
+        var m = S.p2 || S.p1
+        if (!m) { patch({ err: '先选一个模型（体检按 provider 逐个试）' }); return Promise.resolve() }
+        if (m.provider === 'engine') { patch({ err: '内置引擎不走网络，不需要体检' }); return Promise.resolve() }
+        patch({ checking: true, check: null, err: '' })
+        return api(SELFTEST_PATH + '?provider=' + encodeURIComponent(m.provider) + '&force=1')
+          .then(function (r) { patch({ check: r, checking: false }) })
+          .catch(function (e) { patch({ checking: false, err: '体检失败：' + String((e && e.message) || e) }) })
+      }
+
       function aiMove(side, gen) {
         var m = side === 1 ? S.p1 : S.p2
         if (!m) { patch({ err: '请先为该方选一个模型' }); return Promise.resolve() }
@@ -219,6 +232,13 @@ window.__ModuleLoader__.load({
         }).then(function (res) {
           if (gen !== S.gen) return
           var ok = place(res.r, res.c, side)
+          patch({
+            engine: res.engine || null,
+            modelMove: {
+              r: res.r, c: res.c, name: res.name || '模型',
+              same: !!res.agreedWithEngine, fallback: !!res.fallback,
+            },
+          })
           if (!ok) {
             patch({ err: '模型给的位置不可落子：(' + res.r + ',' + res.c + ')' })
           } else if (res.fallback) {
@@ -341,10 +361,15 @@ window.__ModuleLoader__.load({
       function ModelPick(props) {
         var g = useGame()
         var dir = g.dir || []
-        var val = props.value ? props.value.provider + SEP + props.value.model : ''
+        var val = ''
+        if (props.value) {
+          val = (props.value.provider === 'engine') ? 'ENGINE' : (props.value.provider + SEP + props.value.model)
+        }
         var opts = [h('option', { key: '_', value: '' }, '选择模型…')]
         if (props.allowCurrent && g.current) opts.push(h('option', { key: '_cur', value: 'cur' }, '本会话模型（我）'))
+        opts.push(h('option', { key: '_engine', value: 'ENGINE' }, '⚙ 内置引擎（不花 token）'))
         var byKey = {}
+        byKey.ENGINE = { provider: 'engine', model: 'engine', name: '引擎' }
         for (var i = 0; i < dir.length; i++) {
           var p = dir[i]
           var ms = p.models || []
@@ -363,6 +388,7 @@ window.__ModuleLoader__.load({
           value: val, style: style,
           onChange: function (e) {
             var v = e.target.value
+            if (v === 'ENGINE') { props.onPick(byKey.ENGINE); return }
             if (v === 'cur') { props.onPick(g.current || null); return }
             if (!v) { props.onPick(null); return }
             props.onPick(byKey[v] || null)
@@ -413,6 +439,8 @@ window.__ModuleLoader__.load({
           btn('新局', reset),
           btn('悔棋', undo, !g.history.length || g.busy),
           btn('重载模型', function () { loadModels(true) }),
+          props.compact ? null : btn(g.checking ? '体检中…' : '体检模型', function () { runSelftest() }, g.checking,
+            '逐个调用该 provider 的所有模型，看哪个你账号真能用'),
           props.compact
             ? btn('收起', function () { patch({ collapsed: true }) })
             : btn(g.open ? '收起浮窗' : '弹出小窗', function () { patch({ open: !S.open, collapsed: false }) }))
@@ -436,7 +464,51 @@ window.__ModuleLoader__.load({
         }
         var meta = h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary, #8a8a93)' } },
           '步数 ' + g.history.length + ' · ' + (g.dir ? g.dir.length + ' 个 provider' : '模型列表未加载'))
-        return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } }, row1, pickers, meta)
+        // 体检结果：只在大盘显示，避免浮窗里挤成一团
+        var checkBox = null
+        if (!props.compact && (g.check || g.checking)) {
+          var rows = []
+          if (g.checking) rows.push(h('div', { key: 'busy' }, '正在逐个试模型…（每个都要真调一次）'))
+          if (g.check) {
+            rows.push(h('div', { key: 'sum', style: { fontWeight: 600 } },
+              '体检 ' + g.check.provider + '：可用 ' + g.check.usable + '/' + g.check.total))
+            for (var ci = 0; ci < g.check.results.length; ci++) {
+              var cr = g.check.results[ci]
+              rows.push(h('div', {
+                key: 'c' + ci,
+                style: { color: cr.ok ? 'inherit' : 'var(--dsw-alias-label-warning, #b8860b)' },
+              }, (cr.ok ? '✓ ' : '✗ ') + cr.model + '  ' + (cr.ok ? (cr.ms + 'ms') : String(cr.error || '').slice(0, 64))))
+            }
+          }
+          checkBox = h('div', {
+            style: {
+              fontSize: '11px', lineHeight: 1.6, maxHeight: '160px', overflow: 'auto',
+              borderTop: '1px solid rgba(127,127,127,.25)', paddingTop: '6px',
+            },
+          }, rows)
+        }
+        return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } }, row1, pickers, meta, checkBox)
+      }
+
+      // 让用户看见"模型下的那步 vs 引擎认为最好的一步"，弱模型弱在哪一目了然。
+      function EngineNote(props) {
+        var g = useGame()
+        if (!g.engine && !g.modelMove) return null
+        var parts = []
+        if (g.modelMove) {
+          parts.push(g.modelMove.name + ' 下 (' + g.modelMove.r + ',' + g.modelMove.c + ')' + (g.modelMove.fallback ? '［兜底］' : ''))
+          if (g.engine) {
+            parts.push(g.modelMove.same
+              ? '与引擎首选一致 ✓'
+              : '引擎首选 (' + g.engine.r + ',' + g.engine.c + ')：' + g.engine.reason)
+          }
+        }
+        return h('div', {
+          style: {
+            fontSize: '11px', color: 'var(--dsw-alias-label-tertiary, #8a8a93)', lineHeight: 1.6,
+            maxWidth: props.compact ? '280px' : '440px',
+          },
+        }, parts.join(' · '))
       }
 
       function GameView() {
@@ -444,7 +516,7 @@ window.__ModuleLoader__.load({
         useAutoPlay(g)
         React.useEffect(function () { if (!S.dir) loadModels(false) }, [])
         var left = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center' } },
-          h(Board, {}), h(StatusLine, {}))
+          h(Board, {}), h(StatusLine, {}), h(EngineNote, {}))
         var hint = h('div', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary, #8a8a93)', lineHeight: 1.7 } },
           '模型走棋 = 用你已配置的模型直接调一次 LLM：把棋盘当文本发过去，只回一个「行,列」。',
           h('div', null, '模型不听话时贴着已有棋子兜底落一个，并说明原因，不会卡死整局。'),
@@ -480,6 +552,7 @@ window.__ModuleLoader__.load({
           }, '×'))
         var body = h('div', { style: { padding: '8px', display: 'flex', flexDirection: 'column', gap: '8px', pointerEvents: 'auto' } },
           h(StatusLine, { compact: true }),
+          h(EngineNote, { compact: true }),
           h('div', { style: { display: 'flex', justifyContent: 'center' } }, h(Board, { compact: true })),
           h(Controls, { compact: true }))
         return h('div', {
