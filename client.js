@@ -216,48 +216,105 @@ window.__ModuleLoader__.load({
       }
 
       // ---------------- 组件 ----------------
-      function stoneFor(v, cell, isLast) {
+      // 棋盘几何：棋子落在**线的交点**上（不是格子内）。
+      // step = 相邻交点间距，pad = 边距（让最外圈棋子的边缘不被裁掉）。
+      var STARS = [[3, 3], [3, 11], [11, 3], [11, 11], [7, 7]]
+
+      function stoneNode(v, d, isLast, left, top, key) {
         var st = {
-          width: (cell - 4) + 'px', height: (cell - 4) + 'px', borderRadius: '50%',
+          position: 'absolute', left: left + 'px', top: top + 'px',
+          width: d + 'px', height: d + 'px', borderRadius: '50%',
           background: v === 1 ? '#1b1b1f' : '#f7f7fa',
           boxShadow: isLast ? '0 0 0 2px #e5534b' : '0 1px 2px rgba(0,0,0,.35)',
+          pointerEvents: 'none',
         }
         if (v === 2) st.border = '1px solid rgba(0,0,0,.35)'
-        return h('div', { style: st })
-      }
-
-      function cellStyle(r, c, cell, canPlay) {
-        return {
-          width: cell + 'px', height: cell + 'px', boxSizing: 'border-box', background: '#e8c88f',
-          borderRight: c === SIZE - 1 ? 'none' : '1px solid rgba(90,60,20,.45)',
-          borderBottom: r === SIZE - 1 ? 'none' : '1px solid rgba(90,60,20,.45)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          cursor: canPlay ? 'pointer' : 'default',
-        }
+        return h('div', { key: key, style: st })
       }
 
       function Board(props) {
         var g = useGame()
-        var cell = props.compact ? 17 : 22
-        var kids = []
-        for (var r = 0; r < SIZE; r++) {
-          for (var c = 0; c < SIZE; c++) {
-            var v = g.cells[r * SIZE + c]
-            var isLast = !!(g.last && g.last.r === r && g.last.c === c)
+        var step = props.compact ? 17 : 22
+        var pad = props.compact ? 11 : 14
+        var span = (SIZE - 1) * step
+        var size = span + pad * 2
+        var d = step - 3
+        var layers = []
+        var i, r, c, v
+
+        // 15 条横线 + 15 条竖线（最外圈略粗，像木盘的边线）
+        for (i = 0; i < SIZE; i++) {
+          var edge = (i === 0 || i === SIZE - 1)
+          var pos = pad + i * step
+          layers.push(h('div', {
+            key: 'h' + i,
+            style: {
+              position: 'absolute', left: pad + 'px', top: pos + 'px',
+              width: span + 'px', height: edge ? '1.5px' : '1px',
+              background: edge ? 'rgba(72,46,16,.78)' : 'rgba(90,60,20,.5)',
+              pointerEvents: 'none',
+            },
+          }))
+          layers.push(h('div', {
+            key: 'v' + i,
+            style: {
+              position: 'absolute', left: pos + 'px', top: pad + 'px',
+              height: span + 'px', width: edge ? '1.5px' : '1px',
+              background: edge ? 'rgba(72,46,16,.78)' : 'rgba(90,60,20,.5)',
+              pointerEvents: 'none',
+            },
+          }))
+        }
+        // 星位（含天元）
+        for (i = 0; i < STARS.length; i++) {
+          layers.push(h('div', {
+            key: 's' + i,
+            style: {
+              position: 'absolute',
+              left: (pad + STARS[i][1] * step - 2) + 'px',
+              top: (pad + STARS[i][0] * step - 2) + 'px',
+              width: '4px', height: '4px', borderRadius: '50%',
+              background: 'rgba(72,46,16,.85)', pointerEvents: 'none',
+            },
+          }))
+        }
+        // 落子热区：step×step 的方块，方块中心正好压在交点上
+        for (r = 0; r < SIZE; r++) {
+          for (c = 0; c < SIZE; c++) {
+            v = g.cells[r * SIZE + c]
             var canPlay = g.status === 'playing' && !isAI(g.turn) && v === 0 && !g.busy
             var onClick = null
             if (canPlay) onClick = (function (rr, cc, turn) { return function () { place(rr, cc, turn) } })(r, c, g.turn)
-            kids.push(h('div', { key: r + '_' + c, onClick: onClick, style: cellStyle(r, c, cell, canPlay) },
-              v === 0 ? null : stoneFor(v, cell, isLast)))
+            layers.push(h('div', {
+              key: 'z' + r + '_' + c,
+              onClick: onClick,
+              style: {
+                position: 'absolute',
+                left: (pad + c * step - step / 2) + 'px',
+                top: (pad + r * step - step / 2) + 'px',
+                width: step + 'px', height: step + 'px',
+                cursor: canPlay ? 'pointer' : 'default',
+              },
+            }))
+          }
+        }
+        // 棋子：圆心 = 交点
+        for (r = 0; r < SIZE; r++) {
+          for (c = 0; c < SIZE; c++) {
+            v = g.cells[r * SIZE + c]
+            if (v === 0) continue
+            var last = !!(g.last && g.last.r === r && g.last.c === c)
+            layers.push(stoneNode(v, d, last,
+              pad + c * step - d / 2, pad + r * step - d / 2, 'p' + r + '_' + c))
           }
         }
         return h('div', {
           style: {
-            display: 'grid', gridTemplateColumns: 'repeat(' + SIZE + ', ' + cell + 'px)',
-            background: '#e8c88f', padding: '4px', borderRadius: '6px',
-            boxShadow: '0 2px 10px rgba(0,0,0,.35)', userSelect: 'none', width: 'fit-content',
+            position: 'relative', width: size + 'px', height: size + 'px', flex: 'none',
+            background: '#e8c88f', borderRadius: '6px',
+            boxShadow: '0 2px 10px rgba(0,0,0,.35)', userSelect: 'none',
           },
-        }, kids)
+        }, layers)
       }
 
       function ModelPick(props) {
