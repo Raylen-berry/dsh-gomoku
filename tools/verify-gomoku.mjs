@@ -25,7 +25,7 @@ const clientSrc = readFileSync(join(root, 'client.js'), 'utf8')
 const clientBody = `(function(){
   var exports = {}
   ${clientSrc.slice(clientSrc.indexOf('var SIZE = 15'), clientSrc.indexOf('// host 路由往返'))}
-  return { winnerAt: winnerAt, emptyCells: emptyCells, SIZE: SIZE }
+  return { winnerAt: winnerAt, emptyCells: emptyCells, SIZE: SIZE, boardGeom: boardGeom, STARS: STARS, stoneStyle: stoneStyle }
 })()`
 const C = eval(clientBody)
 
@@ -92,6 +92,44 @@ console.log('[3] 兜底选点')
   const full = new Array(SIZE * SIZE).fill(1)
   const q = H.pickMove('x', '', SIZE, full)
   check('棋盘满 → from=full / r=-1', q.from === 'full' && q.r === -1)
+}
+
+// ---- 棋盘几何：棋子必须落在线的交点上（用户实测反馈过"摆格子内"） ----
+console.log('[4] 棋盘几何（棋子 = 交点）')
+{
+  const S = C.SIZE
+  for (const compact of [false, true]) {
+    const gm = C.boardGeom(compact)
+    const tag = compact ? '浮窗' : '会话页'
+    // 网格线 i 的位置
+    const linePos = (i) => gm.pad + i * gm.step
+    // 落子热区中心（Board 里热区方块 left = pad + c*step - step/2，宽 step）
+    const zoneCenter = (c) => (gm.pad + c * gm.step - gm.step / 2) + gm.step / 2
+    // 棋子圆心（stoneNode left = pad + c*step - d/2，直径 d）
+    const stoneCenter = (c) => (gm.pad + c * gm.step - gm.stone / 2) + gm.stone / 2
+
+    check(`${tag}：热区中心 == 交点`, [0, 7, S - 1].every((c) => zoneCenter(c) === linePos(c)), gm)
+    check(`${tag}：棋子圆心 == 交点`, [0, 7, S - 1].every((c) => stoneCenter(c) === linePos(c)), gm)
+    check(`${tag}：棋盘能装下最外圈棋子（含边距）`,
+      gm.pad >= gm.stone / 2 && gm.size === linePos(S - 1) + gm.pad, gm)
+    check(`${tag}：棋子直径 < 交点间距（相邻棋子不粘连）`, gm.stone < gm.step, gm)
+    check(`${tag}：棋盘尺寸 = (15-1)*step + 2*pad`, gm.size === (S - 1) * gm.step + 2 * gm.pad, gm)
+  }
+  check('星位共 5 个且含天元', C.STARS.length === 5 && JSON.stringify(C.STARS).includes('[7,7]'))
+
+  // 白子的 1px 描边必须是 border-box，否则白子大 2px 且圆心偏 1px
+  // （浏览器实测过：白子中心 190.8，交点 190）
+  const gm = C.boardGeom(false)
+  const black = C.stoneStyle(1, gm.stone, false, 100, 100)
+  const white = C.stoneStyle(2, gm.stone, true, 100, 100)
+  check('棋子尺寸盒子 = border-box（描边不吃尺寸）',
+    black.boxSizing === 'border-box' && white.boxSizing === 'border-box',
+    { black: black.boxSizing, white: white.boxSizing })
+  check('黑白子声明尺寸一致', black.width === white.width && black.height === white.height,
+    { black: black.width, white: white.width })
+  check('黑白子圆心坐标一致（只有描边不同）', black.left === white.left && black.top === white.top)
+  check('棋子不吃鼠标事件（热区才收点击）', black.pointerEvents === 'none' && white.pointerEvents === 'none')
+  check('最后一手有红圈标记', String(white.boxShadow).includes('#e5534b') && !String(black.boxShadow).includes('#e5534b'))
 }
 
 console.log('')

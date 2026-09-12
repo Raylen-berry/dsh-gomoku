@@ -55,6 +55,38 @@ window.__ModuleLoader__.load({
       return false
     }
 
+    // 棋盘几何：棋子落在**线的交点**上（不是格子内）。放在模块级是为了让
+    // tools/verify-gomoku.mjs 能离线取到它 —— 位置只有这一个来源，于是
+    // 「网格线位置 = 落子热区中心 = 棋子圆心」三者恒等，不可能各算各的。
+    var STARS = [[3, 3], [3, 11], [11, 3], [11, 11], [7, 7]]
+
+    function boardGeom(compact) {
+      var step = compact ? 17 : 22
+      var pad = compact ? 11 : 14
+      return {
+        step: step,
+        pad: pad,
+        span: (SIZE - 1) * step,
+        size: (SIZE - 1) * step + pad * 2,
+        stone: step - 3,
+      }
+    }
+
+    // 棋子样式（纯函数）。boxSizing 必须是 border-box：白子那圈 1px 描边若算在
+    // 尺寸之外（content-box），白子会比黑子大 2px，圆心还会偏 1px
+    // —— 实测过 190.8 vs 交点 190，就是这么来的。
+    function stoneStyle(v, d, isLast, left, top) {
+      var st = {
+        position: 'absolute', left: left + 'px', top: top + 'px',
+        width: d + 'px', height: d + 'px', boxSizing: 'border-box', borderRadius: '50%',
+        background: v === 1 ? '#1b1b1f' : '#f7f7fa',
+        boxShadow: isLast ? '0 0 0 2px #e5534b' : '0 1px 2px rgba(0,0,0,.35)',
+        pointerEvents: 'none',
+      }
+      if (v === 2) st.border = '1px solid rgba(0,0,0,.35)'
+      return st
+    }
+
     // host 路由往返：非 2xx 一律抛出带响应片段的错误，界面上能看到原因。
     function api(path, options) {
       return fetch(path, options).then(function (r) {
@@ -216,29 +248,18 @@ window.__ModuleLoader__.load({
       }
 
       // ---------------- 组件 ----------------
-      // 棋盘几何：棋子落在**线的交点**上（不是格子内）。
-      // step = 相邻交点间距，pad = 边距（让最外圈棋子的边缘不被裁掉）。
-      var STARS = [[3, 3], [3, 11], [11, 3], [11, 11], [7, 7]]
-
       function stoneNode(v, d, isLast, left, top, key) {
-        var st = {
-          position: 'absolute', left: left + 'px', top: top + 'px',
-          width: d + 'px', height: d + 'px', borderRadius: '50%',
-          background: v === 1 ? '#1b1b1f' : '#f7f7fa',
-          boxShadow: isLast ? '0 0 0 2px #e5534b' : '0 1px 2px rgba(0,0,0,.35)',
-          pointerEvents: 'none',
-        }
-        if (v === 2) st.border = '1px solid rgba(0,0,0,.35)'
-        return h('div', { key: key, style: st })
+        return h('div', { key: key, style: stoneStyle(v, d, isLast, left, top) })
       }
 
       function Board(props) {
         var g = useGame()
-        var step = props.compact ? 17 : 22
-        var pad = props.compact ? 11 : 14
-        var span = (SIZE - 1) * step
-        var size = span + pad * 2
-        var d = step - 3
+        var gm = boardGeom(props.compact)
+        var step = gm.step
+        var pad = gm.pad
+        var span = gm.span
+        var size = gm.size
+        var d = gm.stone
         var layers = []
         var i, r, c, v
 

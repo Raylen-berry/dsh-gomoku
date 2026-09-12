@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dsh-gomoku · 棋盘几何预览（棋子必须在交点）</title>
+<style>
+  body { margin: 0; padding: 24px; background: #16161b; color: #e8e8ee;
+         font: 13px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  p  { color: #a9a9b3; margin: 0 0 18px; }
+  .row { display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; }
+  .cap { font-size: 11px; color: #8a8a93; margin-top: 6px; }
+  code { color: #e5c07b; }
+</style>
+</head>
+<body>
+<h1>棋盘几何预览 —— 棋子落在<i>线的交点</i>上</h1>
+<p>这张图用的是 <code>client.js</code> 里 <code>boardGeom()</code> 的同一套数字；红点标出每个交点的位置，棋子圆心必须与红点重合。</p>
+<div class="row" id="out"></div>
+<script>
+// 与 client.js 完全一致的常量与公式（改了那边要同步这里）
+var SIZE = 15
+var STARS = [[3, 3], [3, 11], [11, 3], [11, 11], [7, 7]]
+function boardGeom(compact) {
+  var step = compact ? 17 : 22
+  var pad = compact ? 11 : 14
+  return { step: step, pad: pad, span: (SIZE - 1) * step, size: (SIZE - 1) * step + pad * 2, stone: step - 3 }
+}
+
+// 一小段演示棋谱（黑先）
+var MOVES = [[7, 7], [7, 8], [6, 7], [8, 8], [6, 6], [8, 7], [5, 7], [9, 7]]
+
+function stone(v, d, left, top) {
+  var el = document.createElement('div')
+  el.style.cssText = 'position:absolute;border-radius:50%;pointer-events:none;box-sizing:border-box;'
+    + 'left:' + left + 'px;top:' + top + 'px;width:' + d + 'px;height:' + d + 'px;'
+    + 'background:' + (v === 1 ? '#1b1b1f' : '#f7f7fa') + ';'
+    + 'box-shadow:0 1px 2px rgba(0,0,0,.35);'
+    + (v === 2 ? 'border:1px solid rgba(0,0,0,.35);' : '')
+  return el
+}
+
+function board(compact, showDots) {
+  var gm = boardGeom(compact)
+  var step = gm.step, pad = gm.pad, span = gm.span, d = gm.stone
+  var box = document.createElement('div')
+  box.style.cssText = 'position:relative;flex:none;background:#e8c88f;border-radius:6px;'
+    + 'box-shadow:0 2px 10px rgba(0,0,0,.35);width:' + gm.size + 'px;height:' + gm.size + 'px;'
+
+  // 15 横 + 15 竖
+  for (var i = 0; i < SIZE; i++) {
+    var edge = (i === 0 || i === SIZE - 1)
+    var pos = pad + i * step
+    var hl = document.createElement('div')
+    hl.style.cssText = 'position:absolute;left:' + pad + 'px;top:' + pos + 'px;width:' + span + 'px;'
+      + 'height:' + (edge ? 1.5 : 1) + 'px;background:' + (edge ? 'rgba(72,46,16,.78)' : 'rgba(90,60,20,.5)')
+    box.appendChild(hl)
+    var vl = document.createElement('div')
+    vl.style.cssText = 'position:absolute;left:' + pos + 'px;top:' + pad + 'px;height:' + span + 'px;'
+      + 'width:' + (edge ? 1.5 : 1) + 'px;background:' + (edge ? 'rgba(72,46,16,.78)' : 'rgba(90,60,20,.5)')
+    box.appendChild(vl)
+  }
+  // 星位
+  for (var s = 0; s < STARS.length; s++) {
+    var dot = document.createElement('div')
+    dot.style.cssText = 'position:absolute;width:4px;height:4px;border-radius:50%;background:rgba(72,46,16,.85);'
+      + 'left:' + (pad + STARS[s][1] * step - 2) + 'px;top:' + (pad + STARS[s][0] * step - 2) + 'px'
+    box.appendChild(dot)
+  }
+  // 交点位置的红点（仅诊断用）
+  if (showDots) {
+    for (var r = 0; r < SIZE; r++) for (var c = 0; c < SIZE; c++) {
+      var p = document.createElement('div')
+      p.style.cssText = 'position:absolute;width:2px;height:2px;border-radius:50%;background:#e5534b;opacity:.85;'
+        + 'left:' + (pad + c * step - 1) + 'px;top:' + (pad + r * step - 1) + 'px'
+      box.appendChild(p)
+    }
+  }
+  // 棋子：圆心 = 交点
+  for (var m = 0; m < MOVES.length; m++) {
+    var rr = MOVES[m][0], cc = MOVES[m][1]
+    var v = (m % 2 === 0) ? 1 : 2
+    box.appendChild(stone(v, d, pad + cc * step - d / 2, pad + rr * step - d / 2))
+  }
+  return box
+}
+
+function section(title, caption, node) {
+  var wrap = document.createElement('div')
+  var h = document.createElement('div')
+  h.textContent = title
+  h.style.cssText = 'font-size:12px;font-weight:600;margin-bottom:8px'
+  wrap.appendChild(h)
+  wrap.appendChild(node)
+  var cap = document.createElement('div')
+  cap.className = 'cap'
+  cap.textContent = caption
+  wrap.appendChild(cap)
+  return wrap
+}
+
+var out = document.getElementById('out')
+var g = boardGeom(false)
+out.appendChild(section('会话页（大棋盘）', 'step=' + g.step + ' 交点间距, 棋子直径=' + g.stone + 'px', board(false, false)))
+out.appendChild(section('浮窗（紧凑）', 'step=' + boardGeom(true).step + ', 直径=' + boardGeom(true).stone + 'px', board(true, false)))
+out.appendChild(section('诊断：红点=交点', '放大看棋子圆心与红点重合', board(false, true)))
+</script>
+</body>
+</html>
