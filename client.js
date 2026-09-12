@@ -114,6 +114,7 @@ window.__ModuleLoader__.load({
         open: false, collapsed: false,
         gen: 0,
         engine: null, modelMove: null, check: null, checking: false,
+        budget: 5000,
       }
       var subs = []
       function notify() { for (var i = 0; i < subs.length; i++) { try { subs[i]() } catch (e) {} } }
@@ -228,6 +229,7 @@ window.__ModuleLoader__.load({
           body: JSON.stringify({
             provider: m.provider, model: m.model, name: m.name || m.model,
             side: side, size: SIZE, cells: S.cells, history: hist,
+            timeoutMs: S.budget,
           }),
         }).then(function (res) {
           if (gen !== S.gen) return
@@ -237,6 +239,7 @@ window.__ModuleLoader__.load({
             modelMove: {
               r: res.r, c: res.c, name: res.name || '模型',
               same: !!res.agreedWithEngine, fallback: !!res.fallback,
+              timedOut: !!res.timedOut, timeoutMs: res.timeoutMs,
             },
           })
           if (!ok) {
@@ -434,8 +437,21 @@ window.__ModuleLoader__.load({
           h('option', { key: 'b', value: 'model-model' }, '模型 vs 模型'),
           h('option', { key: 'c', value: 'human-human' }, '我 vs 我（双人）'),
         ])
+        // 时间预算：慢的根源是推理模型的思考（实测 2.6s / 8.9s / 12.1s），
+        // 与其让棋盘干等，不如到点就让引擎接着下 —— 谁在拖后腿一眼可见。
+        var budgetSel = h('select', {
+          value: String(g.budget), style: selStyle,
+          title: '模型的时间预算：到点未回就让引擎代打',
+          onChange: function (e) { patch({ budget: Number(e.target.value) }) },
+        }, [
+          h('option', { key: 'b1', value: '2500' }, '⚡ 快 2.5s'),
+          h('option', { key: 'b2', value: '5000' }, '标准 5s'),
+          h('option', { key: 'b3', value: '15000' }, '耐心 15s'),
+          h('option', { key: 'b4', value: '0' }, '不限时'),
+        ])
         var row1 = h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' } },
           modeSel,
+          budgetSel,
           btn('新局', reset),
           btn('悔棋', undo, !g.history.length || g.busy),
           btn('重载模型', function () { loadModels(true) }),
@@ -496,8 +512,12 @@ window.__ModuleLoader__.load({
         if (!g.engine && !g.modelMove) return null
         var parts = []
         if (g.modelMove) {
-          parts.push(g.modelMove.name + ' 下 (' + g.modelMove.r + ',' + g.modelMove.c + ')' + (g.modelMove.fallback ? '［兜底］' : ''))
-          if (g.engine) {
+          if (g.modelMove.timedOut) {
+            parts.push(g.modelMove.name + ' 超时未回（预算 ' + Math.round((g.modelMove.timeoutMs || 0) / 1000) + 's）→ 引擎代打')
+          } else {
+            parts.push(g.modelMove.name + ' 下 (' + g.modelMove.r + ',' + g.modelMove.c + ')' + (g.modelMove.fallback ? '［兜底］' : ''))
+          }
+          if (g.engine && !g.modelMove.timedOut) {
             parts.push(g.modelMove.same
               ? '与引擎首选一致 ✓'
               : '引擎首选 (' + g.engine.r + ',' + g.engine.c + ')：' + g.engine.reason)

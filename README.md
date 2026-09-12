@@ -25,6 +25,9 @@
 - **体检模型**：点「体检模型」会**真调**该 provider 下的每一个模型，显示 `✓ 耗时 / ✗ 错误`。
   （实测价值：你的 moonshotai 账号 10 个模型里只有 4 个真能用，不体检根本看不出来。）
 - **兜底**：模型没给出合法坐标时，直接采用引擎首选（比"就近随便下"强得多），并在状态行说明原因。
+- **时间预算**：模型走棋慢的根源是推理模型的思考（实测 2.6s / 8.9s / 12.1s）。所以有「⚡快 2.5s /
+  标准 5s / 耐心 15s / 不限时」四档：到点未回就让引擎接着下，界面会写明「超时未回 → 引擎代打」。
+  不想花 token 也不想等，直接把对手选成 **⚙ 内置引擎**（0.03s）。
 - 胜负判定：四方向连成五子即胜；棋盘落满为和棋。
 
 ---
@@ -66,7 +69,7 @@ New-Item -ItemType Junction `
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/gomoku/models` | 模型目录：`{ providers: [{id,name,models:[{id,name}]}], current: {provider,model} \| null }`。**60 秒内复用**；带 `?reload=1` 强制刷新 |
-| POST | `/gomoku/move` | 请求 `{provider, model, name, side(1黑/2白), size, cells(长度 size*size), history:[{r,c,side}]}`；响应 `{r, c, fallback, from:'text'\|'reasoning'\|'fallback', engine:{r,c,reason}, agreedWithEngine, candidates[3], text, reasoning, finishKind, usage, ms, name}`；失败返回 500 `{ok:false,error}` |
+| POST | `/gomoku/move` | 请求 `{provider, model, name, side(1黑/2白), size, cells(长度 size*size), history:[{r,c,side}], timeoutMs?(0=不限时，默认 5000)}`；响应 `{r, c, fallback, from:'text'\|'reasoning'\|'fallback'\|'engine'\|'engine-timeout', timedOut, timeoutMs, engine:{r,c,reason}, agreedWithEngine, candidates[3], text, reasoning, finishKind, usage, ms, name}`；失败返回 500 `{ok:false,error}`。`provider:'engine'` 时完全不调模型（0ms、不花 token） |
 | GET | `/gomoku/selftest` | **模型体检**：`?provider=<id>[&force=1]`，逐个真调该 provider 的所有模型，返回 `{provider, usable, total, results:[{model,name,ok,ms,error}]}`。60 秒内复用最近一次结果（加 `force=1` 强制重测） |
 
 `cells` 是一维数组，`index = r * size + c`，`0` 空 / `1` 黑 / `2` 白。
@@ -102,6 +105,19 @@ New-Item -ItemType Junction `
     白子会比黑子大 2px、圆心还会偏 1px（浏览器实测 190.8 vs 交点 190）。
 11. **模型走棋的强弱主要是引擎的功劳，不是模型的。** 别把 `rankMoves` 删了直接让模型裸算坐标
     —— flash 级模型在 225 个点里瞎选的结果基本等于随机。
+12. **"模型慢"慢在思考，不在网络。** 同一个中局实测（时间 / usage）：
+
+    | 对手 | 耗时 | usage | 结局 |
+    | --- | --- | --- | --- |
+    | 内置引擎 | **0.03s** | 不花 token | 直接给第一候选 |
+    | deepseek-v4-flash | 2.57s | in=470 out=512 **think=512** | `finishKind=max-tokens`、正文为空，坐标是从**思考块**里扫出来的 |
+    | deepseek-v4-pro | 8.93s | in=523 out=512 **think=512** | 同上 |
+    | kimi-k3 | 12.08s | in=540 out=86 | `finishKind=stop`，正常回答 |
+
+    两个推论：① 把 `maxTokens` 调大只会更慢，调小则连思考都被截断；② 真正的解法是**给时间预算**
+    —— 客户端「⚡快 2.5s / 标准 5s / 耐心 15s / 不限时」，到点未回就让引擎接着下，
+    响应带 `timedOut:true` + `from:'engine-timeout'`，界面写「超时未回 → 引擎代打」。
+    模型下得慢是模型的事，不该让对局卡住。
 
 ### 3.3 文件
 

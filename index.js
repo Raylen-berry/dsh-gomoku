@@ -22,6 +22,9 @@ const SELFTEST_PATH = '/gomoku/selftest'
 const CACHE_MS = 60000
 // 推理模型给少了会被思考块吃光（64 就吃过一次），512 仍是很便宜的一步棋。
 const MAX_TOKENS = 512
+// 默认时间预算（毫秒）：到点就让引擎接着下，别让棋盘干等十几秒。客户端可覆盖，
+// 传 0 = 不限时（愿意等慢模型时用）。
+const DEFAULT_TIMEOUT_MS = 5000
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -347,40 +350,65 @@ export async function apply(ctx) {
         let reasoning = ''
         let usage = null
         let finishKind = null
+        // 时间预算：慢的原因不是网络，是**推理模型的思考**（实测 deepseek-v4-flash 2.6s /
+        // v4-pro 8.9s / kimi-k3 12.1s，且前两者把 512 个 maxTokens 全烧在思考块上）。
+        // 与其让棋盘干等十几秒，不如给个预算：超时就用引擎当前的第一候选接着下，
+        // 并在响应里如实标 timedOut —— 模型下得慢是模型的事，不该让对局卡住。
+        const timeoutMs = a.timeoutMs === 0 ? 0 : Math.max(300, Math.min(60000, Number(a.timeoutMs) || DEFAULT_TIMEOUT_MS))
         const t0 = Date.now()
-        const stream = llm.stream({
-          provider,
-          model,
-          system: sys,
-          // 不传 temperature：Kimi 系列只接受它们各自规定的值（k2.6/k2.5 要 0.6，
-          // k2.7/k3 要 1），传 0.3 会被 400 直接拒掉。不传则用服务端默认值，
-          // 三个 provider 全部可用。
-          maxTokens: MAX_TOKENS,
-          messages: [{
-            id: 'gomoku-ask',
-            role: 'user',
-            content: [{ type: 'text', text: user }],
-            source: { kind: 'plugin', plugin: 'dsh-gomoku' },
-          }],
-        })
-        for await (const chunk of stream) {
-          if (chunk.type === 'text-delta') text += chunk.text
-          else if (chunk.type === 'reasoning-delta') reasoning += chunk.text
-          else if (chunk.type === 'usage') {
-            usage = { inputTokens: chunk.usage.inputTokens, outputTokens: chunk.usage.outputTokens, reasoningTokens: chunk.usage.reasoningTokens }
-          } else if (chunk.type === 'finish') {
-            finishKind = chunk.reason && chunk.reason.kind
-            if (finishKind === 'error' || finishKind === 'aborted') {
-              const fail = chunk.reason && chunk.reason.failure
-              throw new Error((finishKind === 'aborted' ? '调用被中断：' : '模型调用失败：') + ((fail && fail.message) || '未知原因'))
+        const ac = new AbortController()
+        let timedOut = false
+        const timer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; try { ac.abort() } catch (e) {} }, timeoutMs) : null
+        try {
+          for await (const chunk of llm.stream({
+            provider,
+            model,
+            system: sys,
+            // 不传 temperature：Kimi 系列只接受它们各自规定的值（k2.6/k2.5 要 0.6，
+            // k2.7/k3 要 1），传 0.3 会被 400 直接拒掉。不传则用服务端默认值，
+            // 三个 provider 全部可用。
+            maxTokens: MAX_TOKENS,
+            signal: ac.signal,
+            messages: [{
+              id: 'gomoku-ask',
+              role: 'user',
+              content: [{ type: 'text', text: user }],
+              source: { kind: 'plugin', plugin: 'dsh-gomoku' },
+            }],
+          })) {
+            if (chunk.type === 'text-delta') text += chunk.text
+            else if (chunk.type === 'reasoning-delta') reasoning += chunk.text
+            else if (chunk.type === 'usage') {
+              usage = { inputTokens: chunk.usage.inputTokens, outputTokens: chunk.usage.outputTokens, reasoningTokens: chunk.usage.reasoningTokens }
+            } else if (chunk.type === 'finish') {
+              finishKind = chunk.reason && chunk.reason.kind
+              if (finishKind === 'error' || finishKind === 'aborted') {
+                const fail = chunk.reason && chunk.reason.failure
+                throw new Error((finishKind === 'aborted' ? '调用被中断：' : '模型调用失败：') + ((fail && fail.message) || '未知原因'))
+              }
             }
           }
+        } catch (err) {
+          // 只有"预算到点"才吞掉这次异常；真出错照旧抛给客户端
+          if (!timedOut) throw err
+          finishKind = 'timeout'
+        } finally {
+          if (timer) clearTimeout(timer)
         }
-        const picked = pickMove(text, reasoning, size, cells, side)
-        if (picked.r < 0) throw new Error('没有可落子的位置（棋盘已满？）')
+
         const engine = ranked.length ? { r: ranked[0].r, c: ranked[0].c, reason: ranked[0].reason } : null
+        let picked
+        if (timedOut) {
+          picked = engine
+            ? { r: engine.r, c: engine.c, fallback: false, from: 'engine-timeout', reason: engine.reason }
+            : { r: -1, c: -1, fallback: true, from: 'full' }
+        } else {
+          picked = pickMove(text, reasoning, size, cells, side)
+        }
+        if (picked.r < 0) throw new Error('没有可落子的位置（棋盘已满？）')
         sendJson(res, 200, {
           r: picked.r, c: picked.c, fallback: picked.fallback, from: picked.from,
+          timedOut, timeoutMs: timeoutMs,
           engine: engine,
           agreedWithEngine: !!(engine && engine.r === picked.r && engine.c === picked.c),
           candidates: ranked.slice(0, 3),
