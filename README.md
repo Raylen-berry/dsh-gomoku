@@ -139,10 +139,11 @@ New-Item -ItemType Junction `
 | 文件 | 作用 |
 | --- | --- |
 | `index.js` | host 半：模型目录 + 走棋 + 模型体检（`inject: ['webServer','llm']`），三条路由；战术引擎 `rankMoves` 也在这里 |
-| `client.js` | client 半：`conversation.view` 标签页 + `shell.overlay` 浮窗；棋盘几何 `boardGeom()` / 棋子样式 `stoneStyle()` |
+| `client.js` | client 半：`conversation.view` 标签页 + `shell.overlay` 浮窗；棋盘几何 `boardGeom()` / 棋子形状 `stoneShape()`（SVG 圆） |
 | `cordis.patch.yml` | 挂载声明（bundle patch），插入 id `gomoku` |
-| `tools/verify-gomoku.mjs` | 离线自检 42 项：胜负判定、坐标解析、棋盘几何、棋子样式、战术引擎（不开浏览器） |
+| `tools/verify-gomoku.mjs` | 离线自检 **52 项**：胜负判定、坐标解析、棋盘几何、棋子形状、战术引擎、紧急度与强制手 |
 | `tools/board-preview.html` | 棋盘几何预览（含"红点=交点"诊断盘），双击即可看，不用启动 DSH |
+| `tools/png-look.mjs` | **截图取证工具**（通用，零依赖）：PNG → 字符画 + 指标。`--find` 自动定位色块（判据含长宽比加权）、`--light` 深底找白子、`--strict` 收紧掩膜、`--json` 只出数字。模型看不到图片时靠它把"看起来不对"变成可核查的数字 —— 本插件的棋子圆度问题就是它量出来的（`_tools\png-look.mjs` 只是转发壳） |
 
 离线自检：
 
