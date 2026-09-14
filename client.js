@@ -261,6 +261,9 @@ window.__ModuleLoader__.load({
         }).catch(function (e) {
           if (gen === S.gen) patch({ err: String((e && e.message) || e) })
         }).then(function () {
+          // 收闸这一步也必须按局号守门：S.busy 兼作自动走子的同步闸（见 useAutoPlay），
+          // 旧局的请求落地时若把新局的闸清掉，新局那一手会被再放进一次请求。
+          if (gen !== S.gen) return
           S.busy = false
           patch({ busy: false, thinking: '' })
         })

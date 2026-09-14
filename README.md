@@ -142,6 +142,7 @@ New-Item -ItemType Junction `
 | `client.js` | client 半：`conversation.view` 标签页 + `shell.overlay` 浮窗；棋盘几何 `boardGeom()` / 棋子形状 `stoneShape()`（SVG 圆） |
 | `cordis.patch.yml` | 挂载声明（bundle patch），插入 id `gomoku` |
 | `tools/verify-gomoku.mjs` | 离线自检 **52 项**：胜负判定、坐标解析、棋盘几何、棋子形状、战术引擎、紧急度与强制手 |
+| `tools/verify-race.mjs` | 离线自检 **29 项**：跨局竞态 —— 旧局（gen 已过期）的请求落地，不得动新局的 `busy`/思考文案/棋盘/错误提示。把 client 半的真身跑在假 `react`+假 `fetch` 上，走子请求交回可手动落地的句柄，于是「起请求 → 换局 → 让旧 promise 落地」可确定性复现 |
 | `tools/board-preview.html` | 棋盘几何预览（含"红点=交点"诊断盘），双击即可看，不用启动 DSH |
 | `tools/png-look.mjs` | **截图取证工具**（通用，零依赖）：PNG → 字符画 + 指标。`--find` 自动定位色块（判据含长宽比加权）、`--light` 深底找白子、`--strict` 收紧掩膜、`--json` 只出数字。模型看不到图片时靠它把"看起来不对"变成可核查的数字 —— 本插件的棋子圆度问题就是它量出来的（`_tools\png-look.mjs` 只是转发壳） |
 
@@ -150,6 +151,7 @@ New-Item -ItemType Junction `
 ```powershell
 cd E:\deepseekagent\dsh-gomoku-main
 node tools\verify-gomoku.mjs
+node tools\verify-race.mjs
 ```
 
 ---
