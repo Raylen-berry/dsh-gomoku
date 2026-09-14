@@ -37,6 +37,28 @@
 
 ---
 
+## 发布前检查（CI 与本地同一条命令）
+
+push / PR 都会跑 `.github/workflows/ci.yml`，它只做一件事：`npm test`。本地跑的就是同一条命令，
+**不装任何依赖、不联网**：
+
+```bash
+npm test                       # = node tools/run-all.mjs
+node tools/run-all.mjs --list  # 只看清单：跑哪些、以及哪些被排除、为什么
+```
+
+`tools/run-all.mjs` 把每套都跑完再汇总，任一套非 0 退出 ⇒ `npm test` 退出码 1 ⇒ CI 变红。
+CI 用 Node 20/22/24 三档矩阵、windows-latest。
+
+本机实测（Node 24.9.0）：
+
+| 套件 | 本机结果 |
+| --- | --- |
+| `tools/verify-gomoku.mjs` | 52 项通过 |
+| `tools/verify-race.mjs` | 29 项通过 |
+
+`tools/png-look.mjs` 是给人看棋盘的查看器、不是测试套件，未纳入（也不调模型）。
+
 ## 2. 安装
 
 ### 2.1 本机（已装好）
