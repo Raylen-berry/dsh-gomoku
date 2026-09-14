@@ -22,6 +22,7 @@ const CHECKS = []
 const SUITES = [
   'tools/verify-gomoku.mjs',
   'tools/verify-race.mjs',
+  'tools/verify-quota.mjs',
 ]
 
 const EXCLUDED = [

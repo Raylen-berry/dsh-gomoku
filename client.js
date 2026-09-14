@@ -105,6 +105,55 @@ window.__ModuleLoader__.load({
       })
     }
 
+    // ---------------- 设置持久化 ----------------
+    // 与同族插件（dsh-note-changes / dsh-browser-live）同口径：client 侧的开关记在
+    // localStorage，host 半仍然不存任何对局/设置状态（见 index.js 文件头的单一职责）。
+    // key 前缀 = 插件 id，避免与宿主/别的插件撞名。
+    //
+    // 为什么只有这一个开关落盘、而棋盘依旧不落盘：棋盘是"这一局"的数据，
+    // 换局就作废；开关是"这台机器上你想怎么花额度"的偏好，重启后还得管用。
+    var SETTINGS_PREFIX = 'dsh-gomoku:'
+    var SAVE_QUOTA_KEY = SETTINGS_PREFIX + 'save-quota'
+
+    function loadFlag(key, dflt) {
+      try {
+        var raw = window.localStorage.getItem(key)
+        if (raw === '1') return true
+        if (raw === '0') return false
+      } catch (err) { /* localStorage 不可用（无痕/被禁）⇒ 回到默认值 */ }
+      return dflt
+    }
+
+    function saveFlag(key, value) {
+      try { window.localStorage.setItem(key, value ? '1' : '0') } catch (err) { /* 存不上就用内存值 */ }
+    }
+
+    // 落子来源的**前端兜底**（host 半有同名的 moveSourceOf，两边口径一致）：
+    // host 的响应里已经带了 moveSource，正常情况直接用它的；这里只在老 host
+    // （响应里还没有 moveSource）时按同一套规则补一个，免得界面上出现"来源空白"。
+    // 顺序与 host 半一致：坐标是模型自己吐出来的（text/reasoning）就记在模型头上。
+    function moveSourceOf(from, modelCalled, overridden) {
+      if (from === 'engine') return 'engine-opponent'
+      if (from === 'engine-direct') return 'engine-direct'
+      if (from === 'engine-timeout') return 'engine-timeout'
+      if (from === 'engine-forced') return 'engine-veto'
+      if (from === 'text' || from === 'reasoning') return 'model'
+      if (overridden) return 'engine-veto'
+      if (from === 'fallback' || from === 'full') return 'model-fallback'
+      return modelCalled ? 'model' : 'engine-direct'
+    }
+
+    // 来源标记 ⇒ 人话（界面上的"引擎直落"就是它）
+    function sourceLabel(src) {
+      if (src === 'engine-direct') return '⚙ 引擎直落（没花 token）'
+      if (src === 'engine-opponent') return '⚙ 引擎对手（不花 token）'
+      if (src === 'engine-timeout') return '⚙ 超时改由引擎代打'
+      if (src === 'engine-veto') return '⚙ 模型想下的被引擎否决'
+      if (src === 'model-fallback') return '模型没给出合法坐标，引擎兜底'
+      if (src === 'model') return '模型'
+      return ''
+    }
+
     function apply(ctx) {
       var slots = ctx.slots
       var SEP = '\u0000'
@@ -120,6 +169,9 @@ window.__ModuleLoader__.load({
         gen: 0,
         engine: null, modelMove: null, check: null, checking: false,
         budget: 5000,
+        // 省额度模式：初值取自 localStorage（默认关）。它只在**冷启动**读一次，
+        // 之后由勾选框改；改一下就写盘，于是重启后还是这个值。
+        saveQuota: loadFlag(SAVE_QUOTA_KEY, false),
       }
       var subs = []
       function notify() { for (var i = 0; i < subs.length; i++) { try { subs[i]() } catch (e) {} } }
@@ -235,6 +287,9 @@ window.__ModuleLoader__.load({
             provider: m.provider, model: m.model, name: m.name || m.model,
             side: side, size: SIZE, cells: S.cells, history: hist,
             timeoutMs: S.budget,
+            // 省额度开关：true 时 host 在**强制手**上直接落引擎坐标、不发模型请求。
+            // 内置引擎那几档（provider='engine'）host 根本不看这个字段，带上也无害。
+            saveQuota: S.saveQuota === true,
           }),
         }).then(function (res) {
           if (gen !== S.gen) return
@@ -249,6 +304,9 @@ window.__ModuleLoader__.load({
               modelR: res.modelChoice ? res.modelChoice.r : null,
               modelC: res.modelChoice ? res.modelChoice.c : null,
               reason: res.engine ? res.engine.reason : '',
+              // 这一手是谁下的：host 给 moveSource 就用它；老 host（没这个字段）上
+              // 仍然由 moveSourceOf 的同一套口径在前端兜底，界面上不会出现空白来源。
+              source: res.moveSource || moveSourceOf(res.from, !!res.modelCalled, !!res.overridden),
             },
           })
           if (!ok) {
@@ -452,6 +510,34 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // 省额度模式开关（**默认关**）。用 label 包住受控 checkbox：点标签就等于点框，
+      // 框只读 checked 由 React 管，不自己维护 DOM 状态。
+      //   · 开 ⇒ host 在强制手（引擎判"这一手没得商量"）时直接落引擎坐标、不发模型请求；
+      //   · 关 ⇒ 与没有这个开关时完全一样：每次都问模型，答完仍由引擎否决强制手。
+      // 两个界面（会话页标签 + 右下角浮窗）渲染的是同一个 S.saveQuota。
+      function saveQuotaToggle() {
+        var g = useGame()
+        return h('label', {
+          style: {
+            display: 'flex', alignItems: 'center', gap: '3px', fontSize: '11px', cursor: 'pointer',
+            padding: '2px 6px', borderRadius: '6px', border: '1px solid rgba(127,127,127,.35)',
+            userSelect: 'none',
+          },
+        }, [
+          h('input', {
+            key: 'chk', type: 'checkbox', checked: g.saveQuota === true,
+            style: { margin: 0, cursor: 'pointer' },
+            title: '开：引擎判定为强制手（必胜/必挡）时直接落引擎坐标，不发模型请求，省 token；关：照旧每次都问模型',
+            onChange: function (e) {
+              var v = !!(e && e.target && e.target.checked)
+              patch({ saveQuota: v })
+              saveFlag(SAVE_QUOTA_KEY, v)      // 落盘：重启后还是这个值
+            },
+          }),
+          h('span', { key: 'txt' }, '省额度'),
+        ])
+      }
+
       function Controls(props) {
         var g = useGame()
         function btn(label, onClick, disabled, title) {
@@ -485,6 +571,7 @@ window.__ModuleLoader__.load({
         var row1 = h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' } },
           modeSel,
           budgetSel,
+          saveQuotaToggle(),
           btn('新局', reset),
           btn('悔棋', undo, !g.history.length || g.busy),
           btn('重载模型', function () { loadModels(true) }),
@@ -540,12 +627,21 @@ window.__ModuleLoader__.load({
       }
 
       // 让用户看见"模型下的那步 vs 引擎认为最好的一步"，弱模型弱在哪一目了然。
+      // 顺带标出**这一手是谁下的**：省额度模式下强制手由引擎直落，界面上写"引擎直落"，
+      // 与"模型下的一步"分开 —— 否则用户会以为模型每次都被问了。
       function EngineNote(props) {
         var g = useGame()
         if (!g.engine && !g.modelMove) return null
         var parts = []
+        if (g.modelMove && g.modelMove.source) {
+          var sl = sourceLabel(g.modelMove.source)
+          if (sl) parts.push(sl)
+        }
         if (g.modelMove) {
-          if (g.modelMove.timedOut) {
+          if (g.modelMove.source === 'engine-direct') {
+            parts.push('落 (' + g.modelMove.r + ',' + g.modelMove.c + ')'
+              + (g.modelMove.reason ? '：' + g.modelMove.reason : ''))
+          } else if (g.modelMove.timedOut) {
             parts.push(g.modelMove.name + ' 超时未回（预算 ' + Math.round((g.modelMove.timeoutMs || 0) / 1000) + 's）→ 引擎代打')
           } else if (g.modelMove.overridden) {
             parts.push('模型选了 (' + g.modelMove.modelR + ',' + g.modelMove.modelC + ')，但引擎判定必须先处理 ('

@@ -5,7 +5,15 @@
 //
 // 两条 HTTP 路由（客户端 fetch 调用，与 dsh-bg-atelier 同套路）：
 //   GET  /gomoku/models        模型目录（60 秒内复用；?reload=1 强制刷新）
-//   POST /gomoku/move          让某个模型落子，返回 {r,c,fallback,from,...}
+//   POST /gomoku/move          让指定模型走一步棋，返回 {r,c,fallback,from,...}
+//                              另含可核查的花费标记：modelCalled（这次到底调没调模型）
+//                              与 moveSource（这一手是谁下的，界面据此显示来源）。
+//
+// 省额度开关（POST body 的 saveQuota，默认关）：开着时若本地引擎判定这一手是
+// **强制手**（第一候选 urgency ≥ 2：必胜 / 必挡），就直接落引擎的坐标、**不发模型请求**。
+// 判据与文末「引擎否决」完全同一个 —— 那种局面模型答什么都会被改回来，那一次
+// 调用纯属白花 token。关着（= 模型评测模式）行为与加这个开关之前逐字段一致。
+// 开关本身存在客户端（localStorage），host 半仍然不存任何对局/设置状态。
 //
 // 模型输出解析（这里踩过的坑，别退回去）：
 //   StreamChunk 除了 text-delta 还有 **reasoning-delta**。推理模型会先把
@@ -186,6 +194,39 @@ export function pickMove(text, reasoning, size, cells, side) {
   return { r: -1, c: -1, fallback: true, from: 'full' }
 }
 
+// ---------------------------------------------------------------------------
+// 「强制手」判据（唯一来源，两条路共用它，别让判据各写一遍）：
+// rankMoves 的第一候选 urgency ≥ 2 ⇒ 这一手没有讨论余地。按 urgency 的赋值
+// （见 rankMoves 里那段），实际覆盖：我先成五（5）、挡对方成五（4）、成活四 /
+// 挡对方活四（3）、挡对方活三（2），以及"我的三价值 ≥ 120000"那种成活四形态（3）。
+//   ① 省额度模式：开局前先问它，是强制手就**根本不发模型请求**（直接落 engine 的坐标）；
+//   ② 评测模式：模型答完之后再问它，是强制手就**否决模型的选择**。
+// 同一条判据 ⇒ 省额度模式省掉的每一次调用，都确实是"花了钱也会被改回来"的那一次。
+// 注意它**只看第一候选**（既有口径，不是完美强制手识别）：有的局面里"挡对方活三"
+// 存在但排在第二，这里就返回 null。评测模式本来也不否决这种局面，两边口径一致。
+// ---------------------------------------------------------------------------
+const FORCED_URGENCY = 2
+
+export function forcedMove(ranked) {
+  const top = ranked && ranked[0]
+  return top && Number(top.urgency) >= FORCED_URGENCY ? top : null
+}
+
+// 落子来源标记（客户端据此显示「引擎直落 / 模型」）。它是 `from` 的**对外口径**：
+// from 说的是"坐标怎么来的"，moveSource 说的是"这一手该记在谁头上、有没有花 token"。
+// 顺序要紧：`text`/`reasoning` 先判 —— 只要坐标是模型自己吐出来的，就记在模型头上，
+// 绝不因为 modelCalled 的取值把模型下的一步写成"引擎直落"（宁可少标，不可错标）。
+export function moveSourceOf(from, modelCalled, overridden) {
+  if (from === 'engine') return 'engine-opponent'
+  if (from === 'engine-direct') return 'engine-direct'
+  if (from === 'engine-timeout') return 'engine-timeout'
+  if (from === 'engine-forced') return 'engine-veto'
+  if (from === 'text' || from === 'reasoning') return 'model'
+  if (overridden) return 'engine-veto'
+  if (from === 'fallback' || from === 'full') return 'model-fallback'
+  return modelCalled ? 'model' : 'engine-direct'
+}
+
 export async function apply(ctx) {
   const webServer = ctx.get('webServer')
   if (webServer === undefined) {
@@ -323,6 +364,9 @@ export async function apply(ctx) {
         const side = Number(a.side) === 2 ? 2 : 1
         const provider = String(a.provider || '')
         const model = String(a.model || '')
+        // 省额度开关：**只认字面 true**（缺省 / 旧客户端不带这个字段 / 任何假值 ⇒ 评测模式）。
+        // 这样默认行为与加开关之前完全一样，老客户端也不会被意外改变棋路。
+        const saveQuota = a.saveQuota === true
         if (!provider || !model) throw new Error('没有指定模型（provider/model 为空）')
         if (cells.length !== size * size) throw new Error('棋盘数据不完整')
 
@@ -340,6 +384,7 @@ export async function apply(ctx) {
           const label = level === 'strong' ? '引擎·强' : (level === 'easy' ? '引擎·轻' : '引擎·标准')
           sendJson(res, 200, {
             r: mv.r, c: mv.c, fallback: false, from: 'engine',
+            moveSource: 'engine-opponent', modelCalled: false, saveQuota: saveQuota,
             engine: { r: mv.r, c: mv.c, reason: mv.reason },
             agreedWithEngine: pickIdx === 0, candidates: rankedEngine.slice(0, 3),
             text: '', reasoning: '', finishKind: 'engine', usage: null, ms: 0, name: label,
@@ -370,6 +415,37 @@ export async function apply(ctx) {
           + `不要输出解释、标点、代码块或任何多余文字。必须是空点。`
 
         const ranked = rankMoves(cells, size, side, 8)
+        // 引擎当前认为的「最好一手」= 提示词里的第 1 候选 = 强制手时真正落下的点。
+        // 原来这行在模型答完之后就还算一遍；提到模型调用**之前**是为了让省额度模式
+        // 能先判断、再决定要不要花钱（评测模式取值与原来逐字节相同，ranked 不随模型输出变）。
+        const engine = ranked.length ? { r: ranked[0].r, c: ranked[0].c, reason: ranked[0].reason } : null
+        // 强制手：与文末「引擎否决」共用同一个判据 forcedMove()，两处不可能跑偏。
+        const forced = forcedMove(ranked)
+        // 时间预算：慢的原因不是网络，是**推理模型的思考**（实测 deepseek-v4-flash 2.6s /
+        // v4-pro 8.9s / kimi-k3 12.1s，且前两者把 512 个 maxTokens 全烧在思考块上）。
+        // 与其让棋盘干等十几秒，不如给个预算：超时就用引擎当前的第一候选接着下，
+        // 并在响应里如实标 timedOut —— 模型下得慢是模型的事，不该让对局卡住。
+        const timeoutMs = a.timeoutMs === 0 ? 0 : Math.max(300, Math.min(60000, Number(a.timeoutMs) || DEFAULT_TIMEOUT_MS))
+
+        // ---- 省额度模式：引擎已经决定的一手，直接落，不发模型请求 ----------------
+        // 这一支只在 saveQuota === true 且这一手是强制手时才走；落点与评测模式
+        // （问完模型再否决）完全同一个坐标 —— 省的是 token，不是棋力。
+        // 见 tools/verify-quota.mjs 的断言：ON/OFF 两档在同一局面上落点必须相同。
+        if (saveQuota && forced) {
+          sendJson(res, 200, {
+            r: forced.r, c: forced.c, fallback: false, from: 'engine-direct',
+            moveSource: 'engine-direct', modelCalled: false, saveQuota: true,
+            timedOut: false, timeoutMs: timeoutMs,
+            overridden: false, modelChoice: null,
+            engine: engine,
+            agreedWithEngine: true,
+            candidates: ranked.slice(0, 3),
+            text: '', reasoning: '', finishKind: 'engine-direct', usage: null, ms: 0,
+            name: String(a.name || model),
+          })
+          return
+        }
+
         const candTxt = ranked.length
           ? ranked.map((m, i) => `${i + 1}. [${m.r},${m.c}] ${m.reason}`).join('\n')
           : '（棋盘还是空的，下中心附近即可）'
@@ -381,11 +457,7 @@ export async function apply(ctx) {
         let reasoning = ''
         let usage = null
         let finishKind = null
-        // 时间预算：慢的原因不是网络，是**推理模型的思考**（实测 deepseek-v4-flash 2.6s /
-        // v4-pro 8.9s / kimi-k3 12.1s，且前两者把 512 个 maxTokens 全烧在思考块上）。
-        // 与其让棋盘干等十几秒，不如给个预算：超时就用引擎当前的第一候选接着下，
-        // 并在响应里如实标 timedOut —— 模型下得慢是模型的事，不该让对局卡住。
-        const timeoutMs = a.timeoutMs === 0 ? 0 : Math.max(300, Math.min(60000, Number(a.timeoutMs) || DEFAULT_TIMEOUT_MS))
+        // 时间预算到点就 abort（timeoutMs 的判据见上面与省额度早退共用的那一行）。
         const t0 = Date.now()
         const ac = new AbortController()
         let timedOut = false
@@ -427,7 +499,6 @@ export async function apply(ctx) {
           if (timer) clearTimeout(timer)
         }
 
-        const engine = ranked.length ? { r: ranked[0].r, c: ranked[0].c, reason: ranked[0].reason } : null
         let picked
         if (timedOut) {
           picked = engine
@@ -440,8 +511,10 @@ export async function apply(ctx) {
         // 强制手否决：引擎判定"必须先处理这里"时（对方活三/冲四/活四、双方五连），
         // 不让模型的选择改变结论 —— 用户实测反馈过"我明显有活三它却不堵"，
         // 这种局面不是该信任模型的地方。
+        // 判据与上面省额度早退用的**是同一个** forced（ranked[0].urgency ≥ 2）：
+        // 评测模式在这里"答完再改"，省额度模式在那里"根本不问"，落点必然相同。
         let overridden = false
-        if (!timedOut && engine && ranked[0].urgency >= 2) {
+        if (!timedOut && forced) {
           const same = picked.r === engine.r && picked.c === engine.c
           if (!same) {
             overridden = true
@@ -449,8 +522,11 @@ export async function apply(ctx) {
           }
         }
         if (picked.r < 0) throw new Error('没有可落子的位置（棋盘已满？）')
+        const modelCalled = true
         sendJson(res, 200, {
           r: picked.r, c: picked.c, fallback: picked.fallback, from: picked.from,
+          moveSource: moveSourceOf(picked.from, modelCalled, overridden),
+          modelCalled: modelCalled, saveQuota: saveQuota,
           timedOut, timeoutMs: timeoutMs,
           overridden, modelChoice: overridden ? modelPick : null,
           engine: engine,
