@@ -709,7 +709,7 @@ window.__ModuleLoader__.load({
           h(Controls, { compact: true }))
         return h('div', {
           style: {
-            position: 'fixed', right: '14px', bottom: '14px', zIndex: 2147483000,
+            position: 'fixed', right: '14px', bottom: '14px', zIndex: 2147483440,
             width: 'min(330px, 92vw)', maxHeight: '82vh', overflow: 'auto',
             background: 'var(--dsw-alias-bg-layer-2, #1f1f25)', color: 'var(--dsw-alias-label-primary, #e8e8ee)',
             border: '1px solid rgba(127,127,127,.35)', borderRadius: '10px',
