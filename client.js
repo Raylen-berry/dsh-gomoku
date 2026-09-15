@@ -720,7 +720,9 @@ window.__ModuleLoader__.load({
 
       slots.inject('conversation.view', function () {
         return slots.register(
-          { name: 'conversation.view', id: 'gomoku-mini-games', order: 25, label: '小游戏' },
+          // order 必须严格大于账单页的 30：会话视图标签按 order 升序排，
+          // 取 90 让「小游戏」排在全部已注册视图（chat=0 / trajectory=10 / 审批=20 / 账单=30）之后。
+          { name: 'conversation.view', id: 'gomoku-mini-games', order: 90, label: '小游戏' },
           function () { return h(GameView) })
       })
       slots.inject('shell.overlay', function () {
