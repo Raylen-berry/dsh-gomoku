@@ -1,5 +1,5 @@
 // ============================================================================
-// dsh-gomoku · Client half (v1.1.0)
+// dsh-gomoku · Client half (v1.1.1)
 // 会话页「小游戏」标签页 + 右下角可收起浮窗，两个界面共享同一盘棋。
 //
 // 玩法：
@@ -724,7 +724,7 @@ window.__ModuleLoader__.load({
         return slots.register(
           // order 必须严格大于账单页的 30：会话视图标签按 order 升序排，
           // 取 90 让「小游戏」排在全部已注册视图（chat=0 / trajectory=10 / 审批=20 / 账单=30）之后。
-          { name: 'conversation.view', id: 'gomoku-mini-games', order: 90, label: '小游戏' },
+          { name: 'conversation.view', id: 'gomoku-mini-games', order: 9999, label: '小游戏' },
           function () { return h(GamesHome) })
       })
       slots.inject('shell.overlay', function () {
@@ -733,7 +733,7 @@ window.__ModuleLoader__.load({
           function () { return h(FloatingGame) })
       })
 
-      console.log('[dsh-gomoku] client up (v1.1.0)')
+      console.log('[dsh-gomoku] client up (v1.1.1)')
     }
 
     var inject = ['slots', 'timer']

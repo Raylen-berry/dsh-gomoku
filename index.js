@@ -1,5 +1,5 @@
 // ============================================================================
-// dsh-gomoku · Host half (v1.1.0)
+// dsh-gomoku · Host half (v1.1.1)
 // 职责只有两件：① 列出你配置的所有 provider 与模型 ② 让指定模型走一步棋。
 // 棋盘状态全在客户端，这里不存棋局，保持单一职责。
 //
@@ -543,5 +543,5 @@ export async function apply(ctx) {
     },
   }), 'dsh-gomoku: move route')
 
-  console.log('[dsh-gomoku] host up (v1.1.0)')
+  console.log('[dsh-gomoku] host up (v1.1.1)')
 }

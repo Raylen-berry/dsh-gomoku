@@ -318,7 +318,7 @@ function QPlay() {
 }
 
 function GamesHome() {
-  var [mode, setMode] = React.useState('q')
+  var [mode, setMode] = React.useState('gomoku')
   return h(
     'div',
     { className: 'mini-games-home' },
@@ -327,13 +327,13 @@ function GamesHome() {
       { className: 'mini-games-tabs', 'aria-label': '小游戏玩法' },
       h(
         'button',
-        { type: 'button', 'aria-pressed': mode === 'q', onClick: () => setMode('q') },
-        '和 Q 玩',
+        { type: 'button', 'aria-pressed': mode === 'gomoku', onClick: () => setMode('gomoku') },
+        '五子棋',
       ),
       h(
         'button',
-        { type: 'button', 'aria-pressed': mode === 'gomoku', onClick: () => setMode('gomoku') },
-        '五子棋',
+        { type: 'button', 'aria-pressed': mode === 'q', onClick: () => setMode('q') },
+        '和 Q 玩',
       ),
     ),
     mode === 'q' ? h(QPlay) : h('div', { className: 'mini-games-board' }, h(GameView)),

@@ -24,10 +24,16 @@ const check = (label, yes) => {
 }
 try {
   await page.goto(f.origin)
+  await page.getByText('五子棋 · 小游戏', { exact: true }).waitFor()
+  check(
+    '五子棋排第一且默认打开，进入小游戏不调用 Q',
+    (await page.locator('.mini-games-tabs button').first().innerText()) === '五子棋' && f.calls() === 0,
+  )
+  await page.getByRole('button', { name: '和 Q 玩', exact: true }).click()
   await page.getByRole('button', { name: '让她藏一个', exact: true }).waitFor()
   await page.waitForFunction(() => !document.querySelector('.qplay-card button').disabled)
   check(
-    '小游戏默认显示两个 Q 玩法，浏览不调用模型',
+    '切到和 Q 玩显示两个玩法，浏览不调用模型',
     f.calls() === 0 &&
       (await page.getByRole('heading', { name: '半句怪故事', exact: true }).isVisible()),
   )
@@ -53,6 +59,7 @@ try {
   )
   await page.screenshot({ path: path.join(out, 'q-play-chat.png') })
   await page.reload()
+  await page.getByRole('button', { name: '和 Q 玩', exact: true }).click()
   await page.getByText('你是不是在故意逗我', { exact: true }).waitFor()
   check(
     '页面刷新恢复局与历史，不自动再调模型',
@@ -115,6 +122,7 @@ try {
   await page.screenshot({ path: path.join(out, 'q-play-mobile.png') })
   await page.route('**/wx/play*', (route) => route.fulfill({status:404,body:'not found'}))
   await page.reload()
+  await page.getByRole('button', { name: '和 Q 玩', exact: true }).click()
   await page.getByRole('alert').filter({hasText:'需要更新并启用 Q 插件'}).waitFor()
   check('缺少 Q 插件时明确说明依赖，不触发空白游戏', await page.getByRole('button',{name:'让她藏一个',exact:true}).isDisabled())
   await page.getByRole('button',{name:'五子棋',exact:true}).click()
