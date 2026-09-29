@@ -1,5 +1,5 @@
 // ============================================================================
-// dsh-gomoku · Host half (v1.0.0)
+// dsh-gomoku · Host half (v1.1.0)
 // 职责只有两件：① 列出你配置的所有 provider 与模型 ② 让指定模型走一步棋。
 // 棋盘状态全在客户端，这里不存棋局，保持单一职责。
 //
@@ -286,7 +286,7 @@ export async function apply(ctx) {
           id: 'gomoku-probe',
           role: 'user',
           content: [{ type: 'text', text: '只回两个数字：7,8' }],
-          source: { kind: 'plugin', plugin: 'dsh-gomoku' },
+          source: { kind: 'plugin:dsh-gomoku' },
         }],
       })) {
         if (chunk.type === 'finish') {
@@ -476,7 +476,7 @@ export async function apply(ctx) {
               id: 'gomoku-ask',
               role: 'user',
               content: [{ type: 'text', text: user }],
-              source: { kind: 'plugin', plugin: 'dsh-gomoku' },
+              source: { kind: 'plugin:dsh-gomoku' },
             }],
           })) {
             if (chunk.type === 'text-delta') text += chunk.text
@@ -543,5 +543,5 @@ export async function apply(ctx) {
     },
   }), 'dsh-gomoku: move route')
 
-  console.log('[dsh-gomoku] host up (v1.0.0)')
+  console.log('[dsh-gomoku] host up (v1.1.0)')
 }

@@ -56,6 +56,7 @@ export function makeReact() {
       const inst = currentInst
       inst.pending.push({ idx: inst.hookIdx++, fn, deps: deps ? deps.slice() : null })
     },
+    useRef(initial) { return React.useState(() => ({current:initial}))[0] },
   }
 
   function expand(el, path) {
@@ -145,6 +146,7 @@ export async function bootClient(opts) {
   const env = { pending: [], calls: 0, bodies: [] }
   const react = makeReact()
   let captured = null
+  globalThis.document = { createElement: () => ({ remove() {} }), head: { appendChild() {} } }
 
   globalThis.window = {
     __ModuleLoader__: { load: (m) => { captured = m } },
@@ -253,6 +255,9 @@ export async function bootClient(opts) {
     return hosts(forest).filter((n) => n.type === 'input' && n.props && n.props.type === 'checkbox')[0] || null
   }
 
+  // These existing suites exercise gomoku; choose it through the new game picker.
+  const picker = byText('五子棋', 'button')[0]
+  if (picker) { picker.props.onClick(); forest = react.flush() }
   const api = {
     store,
     pending: env.pending,
